@@ -1,0 +1,97 @@
+Author: Mirella Flores <mrf252@cornell.edu>
+Boyce Thompson Insitute
+
+Mikado
+======
+
+```
+input 1: get stringtie from hisat2
+------ 
+Align all rnaseq data to hisat Nitabv6-assembly_pseudo-molecules+unplaced.fa
+sh hisat_se.sh ~/nitab/data 70 2>hisat.log
+~/tools/gffread/gffread -E -G -o all_sra_potato.gff all_sra_potato.gtf
+
+input 2: get junctions from porticullis 
+-----------------------------------
+
+ls *sort.bam |parallel -j 2 portcullis full -t 80 -v potato/andigena/DCH2-v3.fasta {} -o {.}.port &
+
+junctools set -o potatoAndigena-porticullis_all_junc_pass.bed union */3-filt/portcullis_filtered.pass.junctions.bed
+
+
+
+input 3: proteins
+-----------------
+Get proteins from uniprot website: uniprot-viridiplantae+reviewed_yes.fasta
+
+RUN: mikado
+-----------
+
+mikado configure --list list.txt --reference potato/andigena/DCH2-v3.fasta --mode permissive --scoring plant.yaml --copy-scoring plant.yaml --junctions potatoAndigena-porticullis_all_junc_pass.bed -bt ~/db/uniprot-viridiplantae+reviewed_yes+notransposon.fasta -j >configuration.yaml
+
+mikado prepare --json-conf configuration.yaml
+
+makeblastdb ... ~/db/uniprot-viridiplantae+reviewed_yes.fasta
+
+blastx -max_target_seqs 5 -num_threads 90 -query mikado_prepared.fasta -db ~/db/uniprot-viridiplantae+reviewed_yes.fasta -outfmt 5 -evalue 0.000001 2> blast.log | sed '/^$/d' | gzip -c - > mikado.blast.xml.gz
+
+mikado serialise --json-conf configuration.yaml --xml mikado.blast.xml.gz --orfs mikado_prepared.fasta.transdecoder.bed --blast_targets ~/db/uniprot-viridiplantae+reviewed_yes.fasta
+
+
+mikado pick --json-conf configuration.yaml --subloci-out mikado.subloci.gff3
+grep gene names and filter gff with mikado
+
+mikado util grep --genes mikado.loci.mRNA.IDs mikado.loci.gff3 mikado.loci.mRNA.gff3
+```
+
+Repeat annotation and masking the genome
+=====================================
+```
+
+tools/RepeatModeler/BuildDatabase -name potato_tetra -engine ncbi ../DCH2-v3.fasta
+tools/RepeatModeler/RepeatModeler -pa 6 -engine ncbi -database potato_tetra -recoverDir RM_recover >& repeatmodeler.log
+
+Blast  repeat dbb
+makeblastdb -in ~/db/uniprot-viridiplantae+reviewed_yes+notransposon.fasta -out ~/db/uniprot-viridiplantae+reviewed_yes+notransposon.fasta -dbtype prot
+
+blastx -db ~/db/uniprot-viridiplantae+reviewed_yes+notransposon.fasta -query RM_41956.MonSep191517462022/consensi.fa.classified -out repeats2uniprot_blast.out -num_threads 80 -evalue 1e-10 -num_descriptions 10
+
+
+Removes the repeats that found blast records to proteins
+
+tools/RepeatMasker/RepeatMasker -pa 80 -e ncbi -lib RM_41956.MonSep191517462022/consensi.fa.classifiednoProtFinal -noisy -a -u -gff -dir genome_mask ../DCH2-v3.fasta
+
+```
+
+
+Filtering and training Augustus
+```
+filter mikado and get training_set
+
+gff2gbSmallDNA.pl training_set.gff3 potato/andigena/DCH2-v3.fasta 1000 genes.raw.gb
+
+etraining --species=generic genes.raw.gb 2> train.err
+cat train.err | perl -pe 's/.*in sequence (\S+): .*/$1/' > badgenes.lst
+filterGenes.pl badgenes.lst genes.raw.gb > genes.gb
+grep -c "LOCUS" genes.raw.gb genes.gb
+
+randomSplit.pl genes.gb 300
+grep -c LOCUS genes.gb*
+export AUGUSTUS_CONFIG_PATH=tools/Augustus/config/
+tools/Augustus/scripts/new_species.pl --species=potatoDCH2
+etraining --species=potatoDCH2 genes.gb.train
+augustus --species=potatoDCH2 genes.gb.test | tee firsttest.out
+
+tools/Augustus/bin/augustus --species=braker-nitab genes.gb.test | tee firsttest-braker.out
+
+```
+
+```
+
+braker.pl --species=braker-potato --genome=potato/andigena/DCH2-v3.fasta.masked --softmasking --gff3 --cores=90 --bam=../all_sra_potato.bam
+```
+
+
+~/tools/maker/bin/maker -CTL
+
+```
